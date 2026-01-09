@@ -1,182 +1,102 @@
-
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../services/supabaseClient';
-import { UserProfile } from '../types';
+import { Profile } from '../types';
 
-interface TaskCreatorProps {
-  currentUser: UserProfile;
-  onSuccess: (assigneeName: string) => void;
-  onCancel: () => void;
-}
+export const TaskCreator = ({ creatorEmail, onTaskCreated }: { creatorEmail: string, onTaskCreated: () => void }) => {
+  const [profiles, setProfiles] = useState<any[]>([]);
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState(''); // Ô nhập nội dung chi tiết
+  const [assignedTo, setAssignedTo] = useState('');
+  const [deadline, setDeadline] = useState('');
 
-export const TaskCreator: React.FC<TaskCreatorProps> = ({ currentUser, onSuccess, onCancel }) => {
-  const [employees, setEmployees] = useState<UserProfile[]>([]);
-  const [loadingEmployees, setLoadingEmployees] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const [formData, setFormData] = useState({
-    title: '',
-    description: '',
-    deadline: '',
-    assignee_id: ''
-  });
-
+  // Lấy danh sách nhân viên bao gồm cả Email và Họ Tên
   useEffect(() => {
-    const fetchEmployees = async () => {
-      try {
-        // Hierarchical Logic: Fetch users with role_level GREATER than current user
-        // Admin (0) sees 1, 2, 3. Level 1 sees 2, 3. Level 2 sees 3.
-        const { data, error } = await supabase
-          .from('profiles')
-          .select('id, username, full_name, role_level')
-          .gt('role_level', currentUser.role_level)
-          .order('full_name', { ascending: true });
-        
-        if (error) throw error;
-        setEmployees(data as UserProfile[]);
-      } catch (err: any) {
-        console.error("Lỗi tải nhân viên:", err);
-        setError("Không thể liệt kê danh sách nhân sự cấp dưới.");
-      } finally {
-        setLoadingEmployees(false);
-      }
+    const fetchProfiles = async () => {
+      const { data } = await supabase.from('profiles').select('email, full_name');
+      if (data) setProfiles(data);
     };
-    fetchEmployees();
-  }, [currentUser.role_level]);
+    fetchProfiles();
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.assignee_id) {
-      setError("Vui lòng chọn nhân sự phụ trách.");
-      return;
-    }
+    
+    // Lưu công việc vào bảng tasks (có kèm description)
+    const { error: taskError } = await supabase.from('tasks').insert([{
+      title: title,
+      description: description,
+      assigned_to: assignedTo,
+      created_by: creatorEmail,
+      deadline: deadline,
+      status: 'pending'
+    }]);
 
-    setSaving(true);
-    setError(null);
-
-    try {
-      const selectedEmployee = employees.find(emp => emp.id === formData.assignee_id);
-      const assigneeName = selectedEmployee?.full_name || selectedEmployee?.username || 'nhân viên';
-
-      // 1. Create the Task
-      const { data: taskData, error: insertError } = await supabase
-        .from('tasks')
-        .insert({
-          title: formData.title,
-          description: formData.description,
-          deadline: formData.deadline,
-          assignee_id: formData.assignee_id,
-          created_by: currentUser.id,
-          status: 'new'
-        })
-        .select()
-        .single();
-
-      if (insertError) throw insertError;
-
-      // 2. Send Notification to Employee
+    if (!taskError) {
+      // Gửi thông báo rung chuông cho nhân viên
       await supabase.from('notifications').insert({
-        user_id: formData.assignee_id,
-        title: '💼 Công việc mới được giao',
-        message: `${currentUser.full_name || currentUser.username} đã giao cho bạn: "${formData.title}"`,
-        type: 'task_new',
-        is_read: false
+        to_user: assignedTo,
+        message: `🔔 Việc mới: ${title}`
       });
 
-      onSuccess(assigneeName);
-    } catch (err: any) {
-      setError(err.message || "Lỗi hệ thống khi khởi tạo nhiệm vụ.");
-    } finally {
-      setSaving(false);
+      alert('Đã giao việc thành công!');
+      
+      // Xóa trắng form để giao việc tiếp theo
+      setTitle('');
+      setDescription('');
+      setAssignedTo('');
+      setDeadline('');
+      onTaskCreated(); 
+    } else {
+      alert('Lỗi: ' + taskError.message);
     }
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6">
-      <div className="absolute inset-0 bg-gray-900/60 backdrop-blur-md animate-in fade-in duration-300" onClick={onCancel}></div>
-      
-      <div className="relative bg-white rounded-[3.5rem] w-full max-w-xl overflow-hidden shadow-2xl border border-gray-100 animate-in zoom-in-95 slide-in-from-bottom-8 duration-500">
-        <div className="p-8 sm:p-14">
-          <div className="flex justify-between items-start mb-10">
-            <div>
-              <h3 className="text-3xl font-black text-gray-900 tracking-tighter">Bàn Giao Nhiệm Vụ</h3>
-              <p className="text-gray-400 font-bold uppercase tracking-widest text-[9px] mt-2 flex items-center space-x-2">
-                 <span className="w-1.5 h-1.5 bg-blue-500 rounded-full"></span>
-                 <span>Quản lý tiến độ AZ Group</span>
-              </p>
-            </div>
-            <button onClick={onCancel} className="p-3 bg-gray-50 hover:bg-red-50 text-gray-400 hover:text-red-500 rounded-2xl transition-all">
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M6 18L18 6M6 6l12 12"></path></svg>
-            </button>
+    <div className="w-full max-w-4xl bg-white p-6 rounded-3xl shadow-sm border border-slate-100 mb-8">
+      <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4 ml-1">🆕 Giao nhiệm vụ mới</h3>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Tên công việc */}
+          <div className="space-y-1">
+            <label className="text-[10px] font-bold text-slate-500 uppercase ml-2">Tên công việc</label>
+            <input type="text" placeholder="Giao ngói, thu nợ..." className="w-full p-3 bg-slate-50 border-none rounded-2xl text-sm focus:ring-2 focus:ring-green-500" value={title} onChange={e => setTitle(e.target.value)} required />
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-6">
-            <div className="space-y-4">
-              <div>
-                <label className="block text-[10px] font-black text-gray-400 uppercase tracking-[0.2em] mb-2 ml-2">Tên công việc</label>
-                <input
-                  required
-                  type="text"
-                  placeholder="Ghi vắn tắt tiêu đề..."
-                  className="w-full px-7 py-4 rounded-2xl bg-gray-50 border-2 border-transparent focus:bg-white focus:border-green-500 transition-all text-gray-900 font-bold outline-none text-sm"
-                  value={formData.title}
-                  onChange={e => setFormData({ ...formData, title: e.target.value })}
-                />
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-black text-gray-400 uppercase tracking-[0.2em] mb-2 ml-2">Mô tả chi tiết</label>
-                <textarea
-                  placeholder="Yêu cầu chi tiết..."
-                  className="w-full px-7 py-4 rounded-2xl bg-gray-50 border-2 border-transparent focus:bg-white focus:border-green-500 transition-all text-gray-900 font-bold outline-none text-sm min-h-[100px] resize-none"
-                  value={formData.description}
-                  onChange={e => setFormData({ ...formData, description: e.target.value })}
-                />
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-[10px] font-black text-gray-400 uppercase tracking-[0.2em] mb-2 ml-2">Người thực hiện</label>
-                  <select
-                    required
-                    className="w-full px-7 py-4 rounded-2xl bg-gray-50 border-2 border-transparent focus:bg-white focus:border-green-500 transition-all text-gray-900 font-bold outline-none text-sm cursor-pointer"
-                    value={formData.assignee_id}
-                    onChange={e => setFormData({ ...formData, assignee_id: e.target.value })}
-                  >
-                    <option value="">Cấp dưới...</option>
-                    {employees.map(emp => (
-                      <option key={emp.id} value={emp.id}>
-                        {emp.full_name || emp.username} (L{emp.role_level})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-[10px] font-black text-gray-400 uppercase tracking-[0.2em] mb-2 ml-2">Hạn hoàn tất</label>
-                  <input
-                    required
-                    type="datetime-local"
-                    className="w-full px-7 py-4 rounded-2xl bg-gray-50 border-2 border-transparent focus:bg-white focus:border-green-500 transition-all text-gray-900 font-bold outline-none text-sm"
-                    value={formData.deadline}
-                    onChange={e => setFormData({ ...formData, deadline: e.target.value })}
-                  />
-                </div>
-              </div>
-            </div>
-
-            {error && <div className="p-4 rounded-2xl bg-red-50 text-red-600 text-[10px] font-black border border-red-100">{error}</div>}
-
-            <div className="flex space-x-4 pt-4">
-              <button type="button" onClick={onCancel} className="flex-1 py-5 rounded-2xl bg-gray-100 hover:bg-gray-200 text-gray-500 font-black text-[10px] uppercase tracking-widest transition-all">Hủy</button>
-              <button type="submit" disabled={saving} className="flex-[2] py-5 rounded-2xl bg-green-600 hover:bg-green-700 text-white font-black text-[10px] uppercase tracking-widest transition-all shadow-xl active:scale-95 disabled:opacity-50">
-                {saving ? 'Đang gửi...' : 'Xác nhận giao việc'}
-              </button>
-            </div>
-          </form>
+          {/* Chọn nhân viên (Hiển thị Tên đầy đủ) */}
+          <div className="space-y-1">
+            <label className="text-[10px] font-bold text-slate-500 uppercase ml-2">Người nhận việc</label>
+            <select className="w-full p-3 bg-slate-50 border-none rounded-2xl text-sm focus:ring-2 focus:ring-green-500 font-bold" value={assignedTo} onChange={e => setAssignedTo(e.target.value)} required>
+              <option value="">-- Chọn nhân viên --</option>
+              {profiles.map(p => (
+                <option key={p.email} value={p.email}>
+                  {p.full_name ? p.full_name : p.email}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
-      </div>
+
+        {/* Ô nhập chi tiết công việc */}
+        <div className="space-y-1">
+          <label className="text-[10px] font-bold text-slate-500 uppercase ml-2">Mô tả chi tiết (Địa chỉ, lưu ý...)</label>
+          <textarea 
+            placeholder="Nhập hướng dẫn chi tiết cho anh em tại đây..." 
+            className="w-full p-4 bg-slate-50 border-none rounded-2xl text-sm focus:ring-2 focus:ring-green-500 min-h-[80px]" 
+            value={description} 
+            onChange={e => setDescription(e.target.value)}
+          />
+        </div>
+
+        <div className="flex flex-wrap md:flex-nowrap gap-4 items-end">
+          <div className="flex-1 space-y-1">
+            <label className="text-[10px] font-bold text-slate-500 uppercase ml-2">Hạn hoàn thành</label>
+            <input type="datetime-local" className="w-full p-3 bg-slate-50 border-none rounded-2xl text-sm focus:ring-2 focus:ring-green-500" value={deadline} onChange={e => setDeadline(e.target.value)} required />
+          </div>
+          <button type="submit" className="w-full md:w-auto bg-green-600 text-white font-black px-10 py-3.5 rounded-2xl hover:bg-green-700 shadow-lg shadow-green-100 transition-all uppercase tracking-wider text-xs">
+            Giao việc
+          </button>
+        </div>
+      </form>
     </div>
   );
 };

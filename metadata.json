@@ -1,7 +1,5 @@
-
 {
-  "name": "Ngói Xanh AZ - Portal",
-  "short_name": "Ngói Xanh AZ",
-  "description": "Hệ thống điều hành và quản lý nội bộ chính thức của Ngói Xanh AZ Group.",
+  "name": "Blank Tailwind React App",
+  "description": "Một ứng dụng React trắng cơ bản sử dụng Tailwind CSS, được thiết lập sẵn cấu trúc dự án chuẩn.",
   "requestFramePermissions": []
 }

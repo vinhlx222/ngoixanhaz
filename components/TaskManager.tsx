@@ -1,179 +1,142 @@
-
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { supabase } from '../services/supabaseClient';
-import { Task, UserProfile } from '../types';
-import { TaskCreator } from './TaskCreator';
+import { Task } from '../types';
 
-interface TaskManagerProps {
-  user: UserProfile;
-  mode?: 'active' | 'history';
-}
-
-export const TaskManager: React.FC<TaskManagerProps> = ({ user, mode = 'active' }) => {
+export const TaskManager = ({ userEmail, refreshTrigger, viewMode }: { userEmail: string, refreshTrigger: number, viewMode: 'current' | 'history' }) => {
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [userRole, setUserRole] = useState<number>(3);
   const [loading, setLoading] = useState(true);
-  const [isCreatorOpen, setIsCreatorOpen] = useState(false);
-
-  const isManager = user.role_level < 3;
-  const isAdmin = user.role_level === 0;
-
-  const fetchTasks = async () => {
-    setLoading(true);
-    try {
-      let query = supabase
-        .from('tasks')
-        .select(`*, profiles:assignee_id (full_name, username)`)
-        .order('created_at', { ascending: false });
-
-      if (user.role_level !== 0) {
-        // Managers see tasks they created OR assigned to them
-        query = query.or(`assignee_id.eq.${user.id},created_by.eq.${user.id}`);
-      }
-
-      if (mode === 'history') {
-        query = query.eq('status', 'completed');
-      } else {
-        query = query.neq('status', 'completed');
-      }
-
-      const { data, error: taskError } = await query;
-      if (taskError) throw taskError;
-      setTasks(data || []);
-    } catch (err: any) {
-      console.error("Error fetching tasks:", err);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  const [nameMap, setNameMap] = useState<{[key: string]: string}>({});
+  const [expanded, setExpanded] = useState({ New: false, Urgent: false, Overdue: false });
 
   useEffect(() => {
+    fetchUserData();
     fetchTasks();
-  }, [user.id, mode]);
+  }, [userEmail, refreshTrigger, viewMode]);
 
-  const handleRemind = async (task: Task) => {
-    try {
-      const { error } = await supabase.from('notifications').insert({
-        user_id: task.assignee_id,
-        title: '🔔 Nhắc nhở công việc',
-        message: `${user.full_name || user.username} đang nhắc nhở bạn hoàn thành: "${task.title}"`,
-        type: 'reminder',
-        is_read: false
-      });
-
-      if (error) throw error;
-      alert(`🚀 Đã gửi lời nhắc tới nhân sự phụ trách!`);
-    } catch (err: any) {
-      alert('Lỗi gửi thông báo: ' + err.message);
-    }
+  const fetchUserData = async () => {
+    const { data } = await supabase.from('profiles').select('role_level').eq('email', userEmail).single();
+    if (data) setUserRole(data.role_level);
   };
 
-  const handleUpdateStatus = async (taskId: string, newStatus: Task['status'], message: string, taskTitle: string, assigneeId?: string) => {
-    try {
-      const { error } = await supabase.from('tasks').update({ status: newStatus }).eq('id', taskId);
-      if (error) throw error;
-      
-      // Notify about status changes
-      if (newStatus === 'completed' && isAdmin) {
-        await supabase.from('notifications').insert({
-          user_id: assigneeId,
-          title: '✅ Công việc được duyệt',
-          message: `Quản trị viên đã phê duyệt hoàn thành: "${taskTitle}"`,
-          type: 'task_approved'
-        });
-      }
+  const fetchTasks = async () => {
+    const { data: tasksData } = await supabase.from('tasks').select('*').order('deadline', { ascending: false });
+    const { data: profilesData } = await supabase.from('profiles').select('email, full_name');
+    if (profilesData) {
+      const mapping = profilesData.reduce((acc: any, p: any) => ({ ...acc, [p.email]: p.full_name }), {});
+      setNameMap(mapping);
+    }
+    if (tasksData) setTasks(tasksData);
+    setLoading(false);
+  };
 
-      alert(`📢 ${message}`);
+  // BẢN MỚI: BẤM LÀ XÓA LUÔN, KHÔNG HỎI RƯỜM RÀ
+  const deleteTask = async (id: string) => {
+    const { error } = await supabase.from('tasks').delete().eq('id', id);
+    if (!error) {
+      alert("✅ ĐÃ XÓA XONG!");
       fetchTasks();
-    } catch (err: any) {
-      alert('Lỗi hệ thống: ' + err.message);
+    } else {
+      alert("❌ LỖI XÓA: " + error.message);
     }
   };
 
-  const getStatusStyle = (task: Task) => {
-    if (task.status === 'completed') return { bg: 'bg-gray-100 text-gray-500 opacity-80', badgeBg: 'bg-green-100 text-green-700', label: 'Hoàn thành', icon: '✓', textMain: 'text-gray-800' };
-    if (task.status === 'pending') return { bg: 'bg-gray-200 text-gray-600', badgeBg: 'bg-white/50 text-gray-700', label: 'Đang chờ duyệt', icon: '⏳', textMain: 'text-gray-900' };
-    
-    const diff = new Date(task.deadline).getTime() - new Date().getTime();
-    if (diff < 0) return { bg: 'bg-[#ef4444] text-white', badgeBg: 'bg-white/20', label: 'Quá hạn', icon: '!', textMain: 'text-white' };
-    if (diff < 172800000) return { bg: 'bg-[#f59e0b] text-black', badgeBg: 'bg-black/10', label: 'Gấp', icon: '🕒', textMain: 'text-black' };
-    return { bg: 'bg-[#22c55e] text-white', badgeBg: 'bg-white/20', label: 'Tiến độ tốt', icon: '✓', textMain: 'text-white' };
+  const remindTask = async (task: Task) => {
+    const { error } = await supabase.from('notifications').insert({ to_user: task.assigned_to, message: `🚨 NHẮC VIỆC KHẨN CẤP: ${task.title}` });
+    if (!error) alert('🔔 ĐÃ RUNG CHUÔNG XONG!');
+    else alert("❌ LỖI GỬI: " + error.message);
   };
+
+  const updateStatus = async (id: string, newStatus: string, taskTitle?: string) => {
+    await supabase.from('tasks').update({ status: newStatus }).eq('id', id);
+    if (newStatus === 'completed') await supabase.from('notifications').insert({ to_user: 'admin@ngoi.com', message: `📢 Việc xong: ${taskTitle}` });
+    fetchTasks();
+  };
+
+  const getTaskCategory = (task: Task) => {
+    if (task.status === 'approved') return 'History';
+    const now = new Date();
+    const deadline = new Date(task.deadline);
+    if (now > deadline) return 'Overdue';
+    if ((deadline.getTime() - now.getTime()) / (1000 * 60 * 60) <= 48) return 'Urgent';
+    return 'New';
+  };
+
+  if (loading) return <div className="p-10 text-center font-bold uppercase animate-pulse">Đang nạp dữ liệu...</div>;
 
   return (
-    <div className="space-y-10 animate-in fade-in duration-700">
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-6">
-        <div>
-          <h3 className="text-4xl font-black text-gray-900 tracking-tighter">{mode === 'history' ? 'Lịch Sử Hồ Sơ' : 'Danh Sách Công Việc'}</h3>
-          <p className="text-gray-400 font-bold uppercase tracking-widest text-[10px] mt-1.5 flex items-center space-x-2">
-            <span className={`w-2 h-2 rounded-full ${mode === 'history' ? 'bg-amber-500' : 'bg-green-500'} animate-pulse`}></span>
-            <span>{isAdmin ? 'Quản lý toàn bộ AZ' : 'Tiến độ làm việc của bạn'}</span>
-          </p>
-        </div>
-        <div className="flex items-center space-x-3">
-          {isManager && mode === 'active' && (
-            <button onClick={() => setIsCreatorOpen(true)} className="bg-green-600 hover:bg-green-700 text-white px-8 py-4 rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl transition-all active:scale-95 flex items-center space-x-3">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M12 4v16m8-8H4"></path></svg>
-              <span>Giao việc mới</span>
-            </button>
-          )}
-          <button onClick={fetchTasks} className="p-4 bg-white border border-gray-100 rounded-2xl hover:bg-green-50 transition-all shadow-sm active:scale-90 text-gray-400">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-          </button>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-8">
-        {tasks.map(task => {
-          const style = getStatusStyle(task);
-          const isTaskAssignee = task.assignee_id === user.id;
-          const isTaskCreator = task.created_by === user.id;
-          
-          return (
-            <div key={task.id} className={`${style.bg} rounded-[2.5rem] p-8 relative overflow-hidden transition-all shadow-sm group`}>
-              <div className="absolute top-[-20px] right-[-10px] text-[120px] font-black opacity-10 pointer-events-none">{style.icon}</div>
-              <div className="relative z-10 flex flex-col h-full">
-                <div className={`${style.badgeBg} self-start px-4 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest mb-8`}>{style.label}</div>
-                <h4 className={`text-2xl font-black mb-4 leading-tight tracking-tight ${style.textMain}`}>{task.title}</h4>
-                <p className={`text-sm font-medium mb-10 line-clamp-3 opacity-80 ${style.textMain}`}>{task.description || "Nhiệm vụ AZ Group."}</p>
-                
-                <div className="mt-auto space-y-3 pt-6 border-t border-black/5">
-                  <div className="flex items-center space-x-3 text-xs font-bold">
-                    <span className="opacity-60 uppercase text-[8px] font-black">Nhân sự:</span>
-                    <span>{task.profiles?.full_name || 'AZ Member'}</span>
-                  </div>
-                  <div className="flex items-center space-x-3 text-xs font-bold">
-                    <span className="opacity-60 uppercase text-[8px] font-black">Deadline:</span>
-                    <span>{new Date(task.deadline).toLocaleString('vi-VN')}</span>
-                  </div>
-                </div>
-
-                <div className="mt-8">
-                  {/* User Báo cáo */}
-                  {isTaskAssignee && task.status === 'new' && (
-                    <button onClick={() => handleUpdateStatus(task.id, 'pending', 'Báo cáo hoàn thành đã gửi.', task.title)} className="w-full py-4 bg-white/20 hover:bg-white/30 rounded-2xl font-black text-[10px] uppercase tracking-widest transition-all">Gửi Báo Cáo</button>
-                  )}
-
-                  {/* Admin Phê duyệt */}
-                  {isAdmin && task.status === 'pending' && (
-                    <div className="flex space-x-2">
-                      <button onClick={() => handleUpdateStatus(task.id, 'completed', 'Đã duyệt xong.', task.title, task.assignee_id)} className="flex-[2] py-4 bg-green-600 text-white rounded-2xl font-black text-[9px] uppercase tracking-widest">Đồng ý</button>
-                      <button onClick={() => handleUpdateStatus(task.id, 'new', 'Đã từ chối.', task.title)} className="flex-1 py-4 bg-white text-red-500 rounded-2xl font-black text-[9px] uppercase tracking-widest">Từ chối</button>
+    <div className="w-full">
+      {viewMode === 'current' ? (
+        <div className="flex flex-col gap-6">
+          {(['New', 'Urgent', 'Overdue'] as const).map((cat) => {
+            const filtered = tasks.filter(t => getTaskCategory(t) === cat);
+            const isExpanded = expanded[cat];
+            const displayTasks = isExpanded ? filtered : filtered.slice(0, 2);
+            return (
+              <div key={cat} className="space-y-3">
+                <h3 className={`font-black text-[11px] uppercase p-2.5 rounded-xl flex justify-between items-center ${cat === 'New' ? 'bg-blue-50 text-blue-600' : cat === 'Urgent' ? 'bg-amber-50 text-amber-600' : 'bg-red-50 text-red-600'}`}>
+                  <span>{cat === 'New' ? '🆕 Việc mới' : cat === 'Urgent' ? '⏳ Gần hạn' : '⚠️ Quá hạn'} ({filtered.length})</span>
+                  {filtered.length > 2 && <button onClick={() => setExpanded({...expanded, [cat]: !isExpanded})} className="text-[10px] bg-white px-3 py-1 rounded-lg border font-bold shadow-sm"> {isExpanded ? '▲ Thu gọn' : '▼ Hiện thêm'} </button>}
+                </h3>
+                <div className="grid grid-cols-1 gap-3">
+                  {displayTasks.map(task => (
+                    <div key={task.id} className="bg-white rounded-[22px] shadow-sm border border-slate-100 relative overflow-hidden active:scale-[0.98] transition-all">
+                      <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${task.status === 'completed' ? 'bg-amber-400' : getTaskCategory(task) === 'Overdue' ? 'bg-red-500' : 'bg-green-500'}`}></div>
+                      <div className="p-4">
+                        <div className="flex justify-between items-start mb-2">
+                          <h4 onClick={() => setSelectedTask(task)} className="font-black text-slate-800 text-[13px] uppercase truncate flex-1 pr-4 cursor-pointer">{task.title}</h4>
+                          {/* NÚT BẤM TO HƠN, TÁCH BIỆT */}
+                          <div className="flex gap-4">
+                            <button onClick={(e) => { e.stopPropagation(); remindTask(task); }} className="bg-amber-50 p-2 rounded-xl text-xl shadow-sm border border-amber-100">🔔</button>
+                            <button onClick={(e) => { e.stopPropagation(); deleteTask(task.id); }} className="bg-red-50 p-2 rounded-xl text-xl shadow-sm border border-red-100 text-red-400">🗑️</button>
+                          </div>
+                        </div>
+                        <div onClick={() => setSelectedTask(task)} className="flex justify-between items-center text-[9px] font-black text-slate-400 uppercase pt-2 border-t border-slate-50 cursor-pointer">
+                          <span>👤 {nameMap[task.assigned_to] || task.assigned_to}</span>
+                          <span className={getTaskCategory(task) === 'Overdue' ? 'text-red-500' : ''}>⏰ {new Date(task.deadline).toLocaleDateString('vi-VN')}</span>
+                        </div>
+                      </div>
+                      <div className="px-3 pb-3">
+                        {userRole === 3 && task.status === 'pending' && <button onClick={(e) => { e.stopPropagation(); updateStatus(task.id, 'completed', task.title); }} className="w-full bg-slate-900 text-white text-[10px] py-2.5 rounded-xl uppercase">Báo cáo xong</button>}
+                        {userRole === 1 && task.status === 'completed' && (
+                          <div className="flex gap-2">
+                            <button onClick={(e) => { e.stopPropagation(); updateStatus(task.id, 'approved', task.title); }} className="flex-1 bg-green-600 text-white text-[9px] py-2.5 rounded-xl uppercase">Duyệt</button>
+                            <button onClick={(e) => { e.stopPropagation(); updateStatus(task.id, 'pending', task.title); }} className="flex-1 bg-white text-red-500 border border-red-100 text-[9px] py-2.5 rounded-xl uppercase">Làm lại</button>
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  )}
-
-                  {/* Manager Nhắc việc */}
-                  {isTaskCreator && task.status === 'new' && (
-                    <button onClick={() => handleRemind(task)} className="w-full py-4 bg-white/20 hover:bg-white/30 rounded-2xl font-black text-[10px] uppercase tracking-widest transition-all">Nhắc việc ngay</button>
-                  )}
+                  ))}
                 </div>
               </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      ) : (
+        /* Lịch sử */
+        <div className="bg-white p-5 rounded-3xl border border-slate-100">
+           <h2 className="text-sm font-black mb-4 uppercase border-b pb-4">📂 Nhật ký hoàn thành</h2>
+           {tasks.filter(t => getTaskCategory(t) === 'History').map(task => (
+             <div key={task.id} className="p-4 bg-slate-50 rounded-2xl mb-3 flex justify-between items-center">
+               <div onClick={() => setSelectedTask(task)} className="flex-1 cursor-pointer">
+                  <p className="text-sm font-bold uppercase">{task.title}</p>
+                  <p className="text-[9px] text-slate-400 font-bold uppercase">👤 {nameMap[task.assigned_to] || task.assigned_to}</p>
+               </div>
+               {userRole === 1 && <button onClick={() => deleteTask(task.id)} className="p-2 text-red-400 text-lg">🗑️</button>}
+             </div>
+           ))}
+        </div>
+      )}
 
-      {isCreatorOpen && (
-        <TaskCreator currentUser={user} onSuccess={(name) => { alert(`✅ Đã giao việc cho ${name}`); setIsCreatorOpen(false); fetchTasks(); }} onCancel={() => setIsCreatorOpen(false)} />
+      {selectedTask && (
+        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center z-[100] p-6 animate-in fade-in">
+          <div className="bg-white w-full max-w-sm rounded-[35px] p-8">
+            <h2 className="text-xl font-black uppercase mb-4">{selectedTask.title}</h2>
+            <div className="bg-slate-50 p-4 rounded-2xl text-sm italic mb-4">{selectedTask.description || "Không có mô tả."}</div>
+            <button onClick={() => setSelectedTask(null)} className="w-full bg-slate-900 text-white py-4 rounded-2xl font-black uppercase text-xs">Đóng lại</button>
+          </div>
+        </div>
       )}
     </div>
   );
